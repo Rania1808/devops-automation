@@ -1,0 +1,99 @@
+---
+- name: High CPU Usage Remediation
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    log_file: "/var/log/ansible-remediation.log"
+    cpu_threshold: 90
+  
+  tasks:
+    - name: Log remediation start
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] Starting CPU remediation for {{ inventory_hostname }}"
+        create: yes
+      
+    - name: Gather current CPU usage
+      shell: top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1
+      register: current_cpu
+      changed_when: false
+      
+    - name: Identify top CPU consuming processes
+      shell: ps aux --sort=-%cpu | head -11
+      register: top_processes
+      changed_when: false
+      
+    - name: Display top CPU processes
+      debug:
+        msg: "{{ top_processes.stdout_lines }}"
+    
+    - name: Check for failed systemd services
+      shell: systemctl list-units --state=failed --no-pager
+      register: failed_services
+      changed_when: false
+      
+    - name: Restart failed services
+      systemd:
+        name: "{{ item.split()[0] | regex_replace('●', '') }}"
+        state: restarted
+      loop: "{{ failed_services.stdout_lines[1:] }}"
+      when: 
+        - failed_services.stdout_lines | length > 1
+        - item is search('failed')
+      ignore_errors: yes
+    
+    - name: Check for zombie processes
+      shell: ps aux | awk '$8 ~ /Z/ {print $2}'
+      register: zombie_processes
+      changed_when: false
+      
+    - name: Clean temporary files
+      shell: |
+        find /tmp -type f -atime +7 -delete 2>/dev/null || true
+        find /var/tmp -type f -atime +7 -delete 2>/dev/null || true
+      ignore_errors: yes
+    
+    - name: Clear system cache (if safe)
+      shell: sync; echo 3 > /proc/sys/vm/drop_caches
+      when: current_cpu.stdout | float > cpu_threshold
+      ignore_errors: yes
+    
+    - name: Check for high I/O wait
+      shell: iostat -x 1 2 | tail -n +4 | awk '{sum+=$10} END {print sum/NR}'
+      register: io_wait
+      changed_when: false
+      
+    - name: Restart resource-intensive services if needed
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - apache2
+        - nginx
+        - mysql
+      when:
+        - "'{{ item }}' in top_processes.stdout"
+        - current_cpu.stdout | float > cpu_threshold
+      ignore_errors: yes
+    
+    - name: Collect post-remediation metrics
+      shell: |
+        echo "=== CPU Usage ==="
+        mpstat 1 1
+        echo "=== Memory Usage ==="
+        free -m
+        echo "=== Load Average ==="
+        uptime
+      register: post_metrics
+      changed_when: false
+      
+    - name: Display post-remediation metrics
+      debug:
+        msg: "{{ post_metrics.stdout_lines }}"
+    
+    - name: Log remediation completion
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.iso8601 }}] Completed CPU remediation for {{ inventory_hostname }}"

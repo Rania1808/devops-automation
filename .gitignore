@@ -1,0 +1,16 @@
+.env
+*.pyc
+__pycache__/
+*.log
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+ansible/*.retry
+prometheus/data/
+alertmanager/data/
+*.pem
+*.key
+!.ssh/.gitkeep
+.ssh/*
